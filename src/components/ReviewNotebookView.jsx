@@ -137,6 +137,13 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
     const progress = getReviewProgress(activeSession);
     const reviewSummary = summarizeReviewSession(state, activeSessionId);
     const currentReviewMistake = state.mistakes.find(item => item.id === progress.pendingMistakeIds[0]) || null;
+    const currentReviewMistakeId = currentReviewMistake?.id || '';
+
+    // 切到下一题时隐藏参考答案，避免"家长查看答案"形同虚设
+    useEffect(() => {
+        setShowReferenceAnswer(false);
+        setAnswer('');
+    }, [currentReviewMistakeId, activeSessionId]);
 
     const setField = (key, value) => {
         setDraft(prev => {
@@ -295,7 +302,14 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
         event.target.value = '';
         if (!file) return;
         setPracticeStatus('AI 正在看孩子的作答照片...');
-        const base64 = await compressImage(file);
+        let base64;
+        try {
+            base64 = await compressImage(file);
+        } catch (err) {
+            setPracticeStatus('');
+            alert(err.message || '图片处理失败，请重试。');
+            return;
+        }
         const res = await callLLM({ contents: [{ parts: [{ text: buildPhotoCheckPrompt(practice) }, { inlineData: { mimeType: 'image/jpeg', data: base64 } }] }] });
         if (res.error) {
             setPracticeStatus('');
@@ -330,7 +344,14 @@ export default function ReviewNotebookView({ callLLM, profile, voiceURI, onBack 
             return;
         }
         setAiStatus('AI 正在整理错题...');
-        const base64 = await compressImage(file);
+        let base64;
+        try {
+            base64 = await compressImage(file);
+        } catch (err) {
+            setAiStatus('');
+            alert(err.message || '图片处理失败，请重试。');
+            return;
+        }
         const prompt = `请从图片中提取儿童作业中的所有错题，并返回严格 JSON，不要 Markdown。
 每一道错题是一条记录。没有明显错题时返回 {"items":[]}。
 JSON 格式：
@@ -434,7 +455,6 @@ JSON 格式：
         }
         setState(result.state);
         setAnswer('');
-        setShowReferenceAnswer(true);
         setReviewStatus(judgement?.feedback || (result.attempt.isCorrect ? '答对了。' : '这题还需要再看一看。'));
         if (result.session.completedAt) alert('本轮复习完成');
     };
@@ -462,7 +482,7 @@ JSON 格式：
                 setReviewStatus(check.feedback || '这次无法判断，请换一种写法或拍照提交。');
                 return;
             }
-            applyReviewAnswer(answer, { isCorrect: check.result === 'correct', source: 'ai-text', feedback: check.feedback });
+            applyReviewAnswer(answer, { isCorrect: check.result === 'correct', source: 'ai-text', feedback: check.feedback, shouldMaster: check.shouldMaster });
         } catch {
             setReviewStatus('AI 批改格式不正确，请重试。');
         }
@@ -478,7 +498,14 @@ JSON 格式：
         }
         setReviewBusy(true);
         setReviewStatus('AI 正在查看答题照片...');
-        const base64 = await compressImage(file);
+        let base64;
+        try {
+            base64 = await compressImage(file);
+        } catch (err) {
+            setReviewBusy(false);
+            setReviewStatus(err.message || '图片处理失败，请重试。');
+            return;
+        }
         const res = await callLLM({ contents: [{ parts: [
             { text: buildReviewCheckPrompt(currentReviewMistake, answer) },
             { inlineData: { mimeType: 'image/jpeg', data: base64 } }
@@ -494,7 +521,7 @@ JSON 格式：
                 setReviewStatus(check.feedback || '图片看不清，请重拍。');
                 return;
             }
-            applyReviewAnswer(answer || '拍照作答', { isCorrect: check.result === 'correct', source: 'ai-photo', feedback: check.feedback });
+            applyReviewAnswer(answer || '拍照作答', { isCorrect: check.result === 'correct', source: 'ai-photo', feedback: check.feedback, shouldMaster: check.shouldMaster });
         } catch {
             setReviewStatus('AI 批改格式不正确，请重试。');
         }
