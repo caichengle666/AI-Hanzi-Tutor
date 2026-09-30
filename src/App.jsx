@@ -92,7 +92,11 @@ export default function App() {
         await retryChildWorkspace(profileId);
         setSaveStatus(getChildWorkspaceStatus(profileId));
     };
-    const callLLM = (payload) => requestLLM({ provider, baseUrl, apiKey, model, payload });
+    // useLocalStorageState 存取的是字符串，布尔开关统一按字符串 'true' 解析
+    const [viaProxyRaw, setViaProxyRaw] = useLocalStorageState('llm_via_proxy', 'true');
+    const viaProxy = viaProxyRaw === true || viaProxyRaw === 'true';
+    const setViaProxy = (v) => setViaProxyRaw(v ? 'true' : 'false');
+    const callLLM = (payload) => requestLLM({ provider, baseUrl, apiKey, model, payload, viaProxy });
     const addProfile = (name) => {
         const trimmedName = name.trim();
         if (!trimmedName) return;
@@ -166,7 +170,7 @@ export default function App() {
                 {mode === 'home' && <HomeView key={`${profileId}-${workspaceVersion}`} setMode={setMode} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} />}
                 {!workspaceReady && mode !== 'home' && <div className="flex-1 flex items-center justify-center text-slate-400 font-bold">正在加载孩子的数据...</div>}
                 {workspaceError && <div className="flex-1 flex flex-col items-center justify-center gap-4 text-slate-500 font-bold p-6 text-center"><div>{workspaceError}</div><button onClick={() => window.location.reload()} className="px-4 py-2 bg-orange-500 text-white rounded-xl">重新加载</button></div>}
-                {workspaceReady && mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} voiceURI={voiceURI} setVoiceURI={setVoiceURI} englishVoiceURI={englishVoiceURI} setEnglishVoiceURI={setEnglishVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} viaProxy={viaProxy} setViaProxy={setViaProxy} voiceURI={voiceURI} setVoiceURI={setVoiceURI} englishVoiceURI={englishVoiceURI} setEnglishVoiceURI={setEnglishVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'assignments' && <AssignmentsView profileId={profileId} onChanged={() => setWorkspaceVersion(version => version + 1)} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'dictation' && <DictationMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}

@@ -36,6 +36,7 @@ function VoiceDownloadGuide({ language, hasVoices }) {
 
 export default function SettingsView({
     provider, setProvider, baseUrl, setBaseUrl, apiKey, setApiKey, model, setModel,
+    viaProxy, setViaProxy,
     voiceURI, setVoiceURI, englishVoiceURI, setEnglishVoiceURI,
     profiles, activeProfileId, setActiveProfileId, addProfile, renameProfile, deleteProfile,
     exportActiveChildData, importActiveChildData, onBack
@@ -44,6 +45,7 @@ export default function SettingsView({
     const [url, setUrl] = useState(baseUrl);
     const [k, setK] = useState(apiKey);
     const [m, setM] = useState(model);
+    const [vp, setVp] = useState(viaProxy);
     const [vURI, setVURI] = useState(voiceURI);
     const [enURI, setEnURI] = useState(englishVoiceURI);
     const [isCustom, setIsCustom] = useState(false);
@@ -95,7 +97,7 @@ export default function SettingsView({
                 { inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } }
             ]
             : [{ text: '请只回答：连接正常。' }];
-        const result = await requestLLM({ provider: p, baseUrl: finalUrl, apiKey: k.trim(), model: finalModel, payload: { contents: [{ parts }] } });
+        const result = await requestLLM({ provider: p, baseUrl: finalUrl, apiKey: k.trim(), model: finalModel, payload: { contents: [{ parts }] }, viaProxy: p === 'openai' ? vp : false });
         if (result.error) {
             const message = `测试失败：${result.error}`;
             setAiTestStatus(prev => ({ ...prev, [kind]: message }));
@@ -114,7 +116,7 @@ export default function SettingsView({
             return;
         }
         setModelFetchStatus('正在拉取模型列表...');
-        const result = await listModels({ provider: p, baseUrl: url.trim(), apiKey: k.trim() });
+        const result = await listModels({ provider: p, baseUrl: url.trim(), apiKey: k.trim(), viaProxy: p === 'openai' ? vp : false });
         if (result.error) {
             setModelFetchStatus(`拉取失败：${result.error}`);
             return;
@@ -127,7 +129,7 @@ export default function SettingsView({
         const finalModel = isCustom ? customModel.trim() : m;
         if (!finalModel) { alert("模型名称不能为空"); return; }
         const finalUrl = url.trim() || 'https://api.openai.com/v1/chat/completions';
-        setProvider(p); setBaseUrl(finalUrl); setApiKey(k); setModel(finalModel);
+        setProvider(p); setBaseUrl(finalUrl); setApiKey(k); setModel(finalModel); setViaProxy(vp);
         setVoiceURI(vURI); setEnglishVoiceURI(enURI);
         saveReminder(activeProfileId, reminder);
         localStorage.setItem('llm_provider', p);
@@ -193,8 +195,24 @@ export default function SettingsView({
                             <button onClick={() => handleProviderChange('gemini')} className={`py-3 rounded-xl font-bold ${p === 'gemini' ? 'bg-orange-500 text-white' : 'bg-slate-100 text-slate-500'}`}>Gemini</button>
                             <button onClick={() => handleProviderChange('openai')} className={`py-3 rounded-xl font-bold ${p === 'openai' ? 'bg-orange-500 text-white' : 'bg-slate-100 text-slate-500'}`}>OpenAI 兼容</button>
                         </div>
+                        {p === 'gemini' && (
+                            <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                                Gemini 模式直连 Google 官方接口（国内网络不可用），此处不使用自定义地址；要用中转站请切换到「OpenAI 兼容」。
+                            </div>
+                        )}
+                        {p === 'gemini' && isCustom && customModel.trim() && !customModel.trim().startsWith('gemini-') && (
+                            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-xl p-3">
+                                模型名不是 gemini- 开头，与 Gemini 模式不匹配，拉取/测试会失败；用中转站请切换到「OpenAI 兼容」。
+                            </div>
+                        )}
                         {p === 'openai' && (
                             <input value={url} onChange={e => setUrl(e.target.value)} className="w-full p-3 bg-white border rounded-xl focus:border-orange-500 outline-none text-sm" placeholder="https://api.openai.com/v1/chat/completions" />
+                        )}
+                        {p === 'openai' && (
+                            <label className="flex items-start gap-2 text-xs text-slate-600 bg-emerald-50 border border-emerald-200 rounded-xl p-3 cursor-pointer">
+                                <input type="checkbox" checked={vp} onChange={e => setVp(e.target.checked)} className="w-4 h-4 mt-0.5 accent-orange-500 shrink-0" />
+                                <span>通过本站代理请求（推荐开启：中转站没开浏览器跨域时也能用；关闭则浏览器直连中转站）</span>
+                            </label>
                         )}
                         <input value={k} onChange={e => setK(e.target.value)} className="w-full p-3 bg-white border rounded-xl focus:border-orange-500 outline-none text-sm" placeholder="API Key" />
                         <select value={m} onChange={e => {

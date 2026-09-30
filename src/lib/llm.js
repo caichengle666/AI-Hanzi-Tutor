@@ -24,49 +24,91 @@ function geminiPayloadToMessages(payload) {
   return [{ role: 'user', content: content.length === 1 && content[0].type === 'text' ? content[0].text : content }];
 }
 
-export async function callLLM({ provider, baseUrl, apiKey, model, payload }) {
+// 经本站 Worker 同源代理请求 OpenAI 兼容接口（绕开中转站的浏览器 CORS 限制）。
+// Worker 只做透传：目标白名单校验在服务端做，这里只负责把上游 JSON 取出来。
+async function requestViaProxy({ target, apiKey, method, body }) {
+  const response = await fetch('/api/llm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, apiKey, method, body: body ?? null })
+  });
+  const envelope = await response.json();
+  if (!envelope || envelope.ok !== true) {
+    throw new Error(envelope?.error || `代理请求失败 (${response.status})`);
+  }
+  return envelope.data;
+}
+
+export async function callLLM({ provider, baseUrl, apiKey, model, payload, viaProxy }) {
   if (!apiKey) return { error: "请配置 API Key" };
 
+  const isGemini = provider === 'gemini';
+  const useProxy = !isGemini && !!viaProxy;
   try {
-    const isGemini = provider === 'gemini';
-    const response = await fetch(
-      isGemini
-        ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
-        : normalizeOpenAIUrl(baseUrl),
-      isGemini
-        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
-        : {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-            body: JSON.stringify({ model, messages: geminiPayloadToMessages(payload), temperature: 0.4 })
-          }
-    );
-    const data = await response.json();
-    if (!response.ok || data.error) return { error: data.error?.message || `请求失败 (${response.status})` };
+    let data;
+    if (useProxy) {
+      data = await requestViaProxy({
+        target: normalizeOpenAIUrl(baseUrl),
+        apiKey,
+        method: 'POST',
+        body: { model, messages: geminiPayloadToMessages(payload), temperature: 0.4 }
+      });
+    } else {
+      const response = await fetch(
+        isGemini
+          ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
+          : normalizeOpenAIUrl(baseUrl),
+        isGemini
+          ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
+          : {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+              body: JSON.stringify({ model, messages: geminiPayloadToMessages(payload), temperature: 0.4 })
+            }
+      );
+      data = await response.json();
+      if (!response.ok) return { error: data?.error?.message || `请求失败 (${response.status})` };
+    }
+    if (data.error) return { error: data.error?.message || `请求失败` };
     const result = isGemini
       ? { text: data.candidates?.[0]?.content?.parts?.[0]?.text }
       : { text: data.choices?.[0]?.message?.content };
-    return result.text ? result : { error: "AI 没有返回内容" };
+    if (!result.text) return { error: "AI 没有返回内容" };
+    return result;
   } catch (error) {
-    return { error: "网络错误" };
+    // 代理模式的错误信息已由服务端组装好（上游 401/429 等），直接透出
+    if (useProxy) return { error: error?.message || "代理请求失败" };
+    const geminiMode = provider === 'gemini';
+    return {
+      error: geminiMode
+        ? "网络错误：连不上 Google 接口（国内直连不可用），请改用「OpenAI 兼容」模式填中转地址"
+        : "网络错误：接口地址不可达，或被浏览器跨域拦截（中转站需放行 CORS，或开启本站代理）"
+    };
   }
 }
 
-export async function listModels({ provider, baseUrl, apiKey }) {
+export async function listModels({ provider, baseUrl, apiKey, viaProxy }) {
   if (!apiKey) return { error: '请配置 API Key' };
 
+  const isGemini = provider === 'gemini';
+  const useProxy = !isGemini && !!viaProxy;
   try {
-    const isGemini = provider === 'gemini';
-    const response = await fetch(
-      isGemini
-        ? `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
-        : openAIModelsUrl(baseUrl),
-      isGemini
-        ? { headers: { 'Content-Type': 'application/json' } }
-        : { headers: { 'Authorization': `Bearer ${apiKey}` } }
-    );
-    const data = await response.json();
-    if (!response.ok || data.error) return { error: data.error?.message || `请求失败 (${response.status})` };
+    let data;
+    if (useProxy) {
+      data = await requestViaProxy({ target: openAIModelsUrl(baseUrl), apiKey, method: 'GET' });
+    } else {
+      const response = await fetch(
+        isGemini
+          ? `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
+          : openAIModelsUrl(baseUrl),
+        isGemini
+          ? { headers: { 'Content-Type': 'application/json' } }
+          : { headers: { 'Authorization': `Bearer ${apiKey}` } }
+      );
+      data = await response.json();
+      if (!response.ok) return { error: data?.error?.message || `请求失败 (${response.status})` };
+    }
+    if (data.error) return { error: data.error?.message || `请求失败` };
 
     const models = isGemini
       ? (data.models || [])
@@ -76,6 +118,12 @@ export async function listModels({ provider, baseUrl, apiKey }) {
     const uniqueModels = [...new Set(models.filter(Boolean))].sort((left, right) => left.localeCompare(right));
     return uniqueModels.length ? { models: uniqueModels } : { error: '接口没有返回可用模型' };
   } catch {
-    return { error: '无法拉取模型，请检查接口地址、网络或跨域设置' };
+    if (useProxy) return { error: '代理请求失败，请检查网络后重试' };
+    const geminiMode = provider === 'gemini';
+    return {
+      error: geminiMode
+        ? '无法拉取模型：连不上 Google 接口（国内直连不可用），请改用「OpenAI 兼容」模式填中转地址'
+        : '无法拉取模型：请检查接口地址、网络，或中转站是否放行了浏览器跨域（CORS）；也可开启本站代理'
+    };
   }
 }

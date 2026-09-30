@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { normalizeOpenAIUrl } from '../llm.js';
 import { parsePracticeCheck } from '../transferPractice.js';
 import { submitReviewAnswer, summarizeReviewSession } from '../reviewNotebook.js';
@@ -89,5 +89,86 @@ describe('parseEnglishItems', () => {
     it('含空格的识别为句子', () => {
         const items = parseEnglishItems('I am happy');
         expect(items[0].type).toBe('sentence');
+    });
+});
+
+describe('llm 网络错误提示区分 provider', () => {
+    const realFetch = globalThis.fetch;
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    it('listModels 网络异常时不抛 ReferenceError，按 provider 给提示', async () => {
+        globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+        const { listModels } = await import('../llm.js');
+        const g = await listModels({ provider: 'gemini', baseUrl: '', apiKey: 'k' });
+        expect(g.error).toMatch(/Google/);
+        const o = await listModels({ provider: 'openai', baseUrl: 'https://x/v1', apiKey: 'k' });
+        expect(o.error).toMatch(/跨域/);
+    });
+
+    it('callLLM 网络异常时按 provider 给提示', async () => {
+        globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+        const { callLLM } = await import('../llm.js');
+        const g = await callLLM({ provider: 'gemini', apiKey: 'k', model: 'gemini-x', payload: {} });
+        expect(g.error).toMatch(/Google/);
+        const o = await callLLM({ provider: 'openai', baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', payload: {} });
+        expect(o.error).toMatch(/跨域/);
+    });
+});
+
+describe('llm 本站代理模式', () => {
+    const realFetch = globalThis.fetch;
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    it('callLLM viaProxy 走 /api/llm 并解析上游结果', async () => {
+        const seen = [];
+        globalThis.fetch = (url, init) => {
+            seen.push([url, init]);
+            return Promise.resolve({
+                json: () => Promise.resolve({ ok: true, status: 200, data: { choices: [{ message: { content: '连接正常。' } }] } })
+            });
+        };
+        const { callLLM } = await import('../llm.js');
+        const r = await callLLM({ provider: 'openai', baseUrl: 'https://oc2.021800.xyz/v1/', apiKey: 'k', model: 'm', payload: { contents: [{ parts: [{ text: 'hi' }] }] }, viaProxy: true });
+        expect(r.text).toBe('连接正常。');
+        expect(seen[0][0]).toBe('/api/llm');
+        const sent = JSON.parse(seen[0][1].body);
+        expect(sent.target).toBe('https://oc2.021800.xyz/v1/chat/completions');
+        expect(sent.apiKey).toBe('k');
+        expect(sent.body.model).toBe('m');
+    });
+
+    it('callLLM viaProxy 上游报错时透出服务端信息', async () => {
+        globalThis.fetch = () => Promise.resolve({
+            json: () => Promise.resolve({ ok: false, status: 401, error: 'Incorrect API key' })
+        });
+        const { callLLM } = await import('../llm.js');
+        const r = await callLLM({ provider: 'openai', baseUrl: 'https://x/v1', apiKey: 'bad', model: 'm', payload: {}, viaProxy: true });
+        expect(r.error).toBe('Incorrect API key');
+    });
+
+    it('listModels viaProxy 拉取模型列表', async () => {
+        globalThis.fetch = (url, init) => {
+            const sent = JSON.parse(init.body);
+            expect(sent.method).toBe('GET');
+            expect(sent.target.endsWith('/v1/models')).toBe(true);
+            return Promise.resolve({
+                json: () => Promise.resolve({ ok: true, status: 200, data: { data: [{ id: 'b' }, { id: 'a' }] } })
+            });
+        };
+        const { listModels } = await import('../llm.js');
+        const r = await listModels({ provider: 'openai', baseUrl: 'https://x/v1/', apiKey: 'k', viaProxy: true });
+        expect(r.models).toEqual(['a', 'b']);
+    });
+
+    it('gemini 不走代理（viaProxy 被忽略）', async () => {
+        const seen = [];
+        globalThis.fetch = (url) => {
+            seen.push(url);
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }) });
+        };
+        const { callLLM } = await import('../llm.js');
+        const r = await callLLM({ provider: 'gemini', apiKey: 'k', model: 'gemini-x', payload: {}, viaProxy: true });
+        expect(r.text).toBe('ok');
+        expect(String(seen[0]).includes('generativelanguage.googleapis.com')).toBe(true);
     });
 });
