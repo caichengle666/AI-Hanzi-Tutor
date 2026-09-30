@@ -12,12 +12,10 @@ export function useSpeechVoices(languagePrefix = 'zh') {
         };
 
         loadVoices();
-        window.speechSynthesis.onvoiceschanged = loadVoices;
+        window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
 
         return () => {
-            if (window.speechSynthesis.onvoiceschanged === loadVoices) {
-                window.speechSynthesis.onvoiceschanged = null;
-            }
+            window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
         };
     }, [languagePrefix]);
 

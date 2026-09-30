@@ -1,5 +1,5 @@
-function normalizeOpenAIUrl(url) {
-  const clean = (url || '').trim();
+export function normalizeOpenAIUrl(url) {
+  const clean = (url || '').trim().replace(/\/+$/, '');
   if (!clean) return 'https://api.openai.com/v1/chat/completions';
   return clean.endsWith('/v1') ? `${clean}/chat/completions` : clean;
 }

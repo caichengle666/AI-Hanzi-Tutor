@@ -4,12 +4,20 @@ import { playAudio } from '../lib/audio.js';
 export function useDictationPlayback({ words, idx, idxRef, recognitionRef, voiceURI, setStatus, setShowHint, setHintCount }) {
     const autoPlayRef = useRef(false);
     const timerRef = useRef(null);
+    const startTimerRef = useRef(null);
     const hintTimerRef = useRef(null);
+    const speakTokenRef = useRef(0);
 
     const stopEverything = useCallback(() => {
+        // 让正在进行的朗读轮次失效，即使 onend 回调稍后才触发也不会继续
+        speakTokenRef.current += 1;
         if (timerRef.current) {
             clearTimeout(timerRef.current);
             timerRef.current = null;
+        }
+        if (startTimerRef.current) {
+            clearTimeout(startTimerRef.current);
+            startTimerRef.current = null;
         }
         if (hintTimerRef.current) {
             clearTimeout(hintTimerRef.current);
@@ -19,10 +27,12 @@ export function useDictationPlayback({ words, idx, idxRef, recognitionRef, voice
         if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     }, []);
 
-    const speakLoop = useCallback((text, count) => {
+    const speakLoop = useCallback((text, count, token) => {
+        if (token !== speakTokenRef.current) return;
         if (count > 3) {
             setStatus('listening');
-            setTimeout(() => {
+            timerRef.current = setTimeout(() => {
+                if (token !== speakTokenRef.current) return;
                 try {
                     if (recognitionRef.current) recognitionRef.current.start();
                 } catch(e) {}
@@ -30,8 +40,11 @@ export function useDictationPlayback({ words, idx, idxRef, recognitionRef, voice
             return;
         }
 
-        playAudio(text, voiceURI);
-        timerRef.current = setTimeout(() => speakLoop(text, count + 1), 2500);
+        // 用 onend 链式触发下一遍，而不是固定延时，避免长句被截断
+        playAudio(text, voiceURI, 0, 'zh', () => {
+            if (token !== speakTokenRef.current) return;
+            timerRef.current = setTimeout(() => speakLoop(text, count + 1, token), 600);
+        });
     }, [recognitionRef, setStatus, voiceURI]);
 
     const startPlay = useCallback((wordToPlay) => {
@@ -39,13 +52,17 @@ export function useDictationPlayback({ words, idx, idxRef, recognitionRef, voice
         setStatus('playing');
         setShowHint(false);
 
+        const token = speakTokenRef.current;
         let delay = 100;
         if (recognitionRef.current) {
             try { recognitionRef.current.abort(); } catch(e) {}
             delay = 1200;
         }
 
-        setTimeout(() => speakLoop(wordToPlay || words[idxRef.current], 1), delay);
+        startTimerRef.current = setTimeout(() => {
+            startTimerRef.current = null;
+            speakLoop(wordToPlay || words[idxRef.current], 1, token);
+        }, delay);
     }, [idxRef, recognitionRef, setShowHint, setStatus, speakLoop, stopEverything, words]);
 
     const requestAutoPlay = useCallback(() => {

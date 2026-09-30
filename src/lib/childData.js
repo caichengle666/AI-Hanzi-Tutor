@@ -93,6 +93,9 @@ export function downloadJson(filename, data) {
     const link = document.createElement('a');
     link.href = url;
     link.download = filename;
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+    // 延迟释放：Safari/Firefox 在同步 revoke 时可能导致下载失败
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
 }

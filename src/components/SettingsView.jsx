@@ -84,6 +84,11 @@ export default function SettingsView({
             return;
         }
         const config = { provider: p, baseUrl: finalUrl, model: finalModel };
+        // 先把本次测试用到的连接三要素写回 localStorage，保证能力标记的 key
+        // 与业务侧 getActiveVisionSupport() 读取的当前配置一致（Key 本身仍由保存按钮提交）
+        localStorage.setItem('llm_provider', p);
+        localStorage.setItem('llm_base_url', finalUrl);
+        localStorage.setItem('llm_model', finalModel);
         setAiTestStatus(prev => ({ ...prev, [kind]: kind === 'vision' ? '正在测试图片能力...' : '正在测试文字能力...' }));
         const parts = kind === 'vision'
             ? [

@@ -46,16 +46,19 @@ export async function notifyStudyReminder(profileId, childName, reminder) {
     const title = `${childName || '孩子'}学习提醒`;
     const message = config.message || defaultReminder().message;
 
+    let notified = false;
     if ('Notification' in window) {
         if (Notification.permission === 'default') {
             await Notification.requestPermission();
         }
         if (Notification.permission === 'granted') {
             new Notification(title, { body: message, icon: '/apple-touch-icon.png' });
+            notified = true;
         }
     }
 
-    alert(`${title}\n${message}`);
+    // 系统通知发出后不再弹 alert，避免双重打扰；只在通知不可用时降级
+    if (!notified) alert(`${title}\n${message}`);
     return saveReminder(profileId, { ...config, lastNotifiedDate: todayText() });
 }
 import { getChildValue, setChildValue } from './childWorkspace.js';
