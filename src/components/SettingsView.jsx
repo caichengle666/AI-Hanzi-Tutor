@@ -84,11 +84,10 @@ export default function SettingsView({
             return;
         }
         const config = { provider: p, baseUrl: finalUrl, model: finalModel };
-        // 先把本次测试用到的连接三要素写回 localStorage，保证能力标记的 key
-        // 与业务侧 getActiveVisionSupport() 读取的当前配置一致（Key 本身仍由保存按钮提交）
-        localStorage.setItem('llm_provider', p);
-        localStorage.setItem('llm_base_url', finalUrl);
-        localStorage.setItem('llm_model', finalModel);
+        // 注意：测试只用表单里的 config 发请求，不写回 localStorage。
+        // 图片能力标记按 config 单独 key 存储（见 aiCapabilities），保存时写入的
+        // provider/base_url/model 与此处一致，业务侧 getActiveVisionSupport()
+        // 自然能读到；提前写回会导致“测了没保存、刷新后配置错乱”。
         setAiTestStatus(prev => ({ ...prev, [kind]: kind === 'vision' ? '正在测试图片能力...' : '正在测试文字能力...' }));
         const parts = kind === 'vision'
             ? [
