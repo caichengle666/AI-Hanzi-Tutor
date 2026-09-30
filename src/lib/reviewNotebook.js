@@ -379,7 +379,7 @@ export function submitReviewAnswer(state, sessionId, mistakeId, userAnswer, judg
     if (progress.isComplete) nextSession.completedAt = new Date().toISOString();
     const nextMistake = {
         ...mistake,
-        status: isCorrect ? '已复习' : '需再次复习',
+        status: (judgement?.shouldMaster && isCorrect) ? '已掌握' : (isCorrect ? '已复习' : '需再次复习'),
         reviewCount: Number(mistake.reviewCount || 0) + 1,
         lastReviewedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -604,8 +604,11 @@ export function downloadText(filename, text, type = 'text/plain;charset=utf-8') 
     const link = document.createElement('a');
     link.href = url;
     link.download = filename;
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+    // 延迟释放：Safari/Firefox 在同步 revoke 时可能导致下载失败
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 export function parseAiMistakeDrafts(text) {
