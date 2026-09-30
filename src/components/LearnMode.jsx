@@ -39,12 +39,15 @@ export default function LearnMode({ callLLM, addStar, profileId, onBack }) {
 
             useEffect(() => {
                 setIsWriting(false); setAiResult(''); setChatMode(false); setChatHistory([]); // 切换字时重置聊天
+                chatTokenRef.current += 1; // 作废上一汉字的 pending 回复
                 const target = document.getElementById('hanzi-target'); if(target) target.innerHTML = '';
             }, [curIdx]);
 
             // --- AI 聊天逻辑 ---
             const [isRecording, setIsRecording] = useState(false);
             const chatRecognitionRef = useRef(null);
+            // 聊天会话序号：切换汉字时递增，旧汉字的 pending 回复回来时直接丢弃
+            const chatTokenRef = useRef(0);
 
             useEffect(() => {
                 // 初始化语音识别
@@ -96,6 +99,7 @@ export default function LearnMode({ callLLM, addStar, profileId, onBack }) {
                 if(!chatInput.trim()) return;
                 const char = cards[curIdx].hanzi;
                 const userMsg = chatInput;
+                const token = chatTokenRef.current; // 快照：回复回来时校验是否还是同一汉字
                 setChatInput('');
                 setChatHistory(prev => [...prev, {role: 'user', content: userMsg}, {role: 'ai', content: '...', loading: true}]);
                 
@@ -110,6 +114,9 @@ export default function LearnMode({ callLLM, addStar, profileId, onBack }) {
 
                 const res = await callLLM({ contents: [{ parts: [{ text: prompt }] }] });
                 
+                // 用户已切换到别的汉字：丢弃这条迟到的回复
+                if (chatTokenRef.current !== token) return;
+
                 setChatHistory(prev => {
                     const newHist = [...prev];
                     newHist.pop(); // 移除 loading
@@ -211,10 +218,21 @@ export default function LearnMode({ callLLM, addStar, profileId, onBack }) {
             const handlePhotoAdd = async (e) => {
                 const file = e.target.files[0]; if(!file) return;
                 setAiStatus('loading');
-                const base64 = await compressImage(file);
+                let base64;
+                try {
+                    base64 = await compressImage(file);
+                } catch (err) {
+                    setAiStatus('idle');
+                    alert(err.message || '图片处理失败，请重试。');
+                    return;
+                }
                 const prompt = `请识别图片中所有的简体中文字符（不包含标点符号）。请返回一个 JSON 数组，每个对象包含 "hanzi" (汉字) 和 "pinyin" (拼音带声调)。例如: [{"hanzi": "爸", "pinyin": "bà"}]`;
                 const res = await callLLM({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64 } }] }] });
                 setAiStatus('idle');
+                if (res.error || !res.text) {
+                    alert(res.error || '识别失败，请重试。');
+                    return;
+                }
                 try {
                     const cleanJson = res.text.replace(/```json|```/g, '').trim();
                     const list = JSON.parse(cleanJson);
@@ -246,6 +264,10 @@ export default function LearnMode({ callLLM, addStar, profileId, onBack }) {
                 const prompt = `Give pinyin for chars: ${newChars.join('')}. Return JSON array: [{"hanzi":"字","pinyin":"py"}]`;
                 const res = await callLLM({ contents: [{ parts: [{ text: prompt }] }] });
                 setAiStatus('idle');
+                if (res.error || !res.text) {
+                    alert(res.error || '识别失败，请重试。');
+                    return;
+                }
                 
                 try {
                     const list = JSON.parse(res.text.replace(/```json|```/g, '').trim());
