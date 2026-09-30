@@ -99,8 +99,13 @@ export default function EnglishConversationMode({ callLLM, addStar, voiceURI, fe
             alert('当前浏览器不支持英文语音识别，可以直接打字回答。');
             return;
         }
+        if (listening) return;
         setListening(true);
-        recognitionRef.current.start();
+        try {
+            recognitionRef.current.start();
+        } catch {
+            setListening(false);
+        }
     };
 
     const checkAnswer = async () => {

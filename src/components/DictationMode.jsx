@@ -75,14 +75,14 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                     r.onend = () => {};
                     r.onresult = (e) => {
                         const cmd = e.results[0][0].transcript;
-                        if (cmd.match(/下|过|好|ok/i)) goNext();
-                        else if (cmd.match(/重|再|听/)) startPlay(words[idx]);
-                        else if (cmd.match(/笔|看/)) setShowHint(p => !p);
+                        if (cmd.match(/下\s*一?\s*个|下一页|^\s*过\s*$|\bok\b/i)) goNext();
+                        else if (cmd.match(/重读|重播|再听|再读|^\s*听\s*$/i)) startPlay(words[idx]);
+                        else if (cmd.match(/^(看|看一下|看一眼|笔)$/i)) toggleHint(showHint, hintCount);
                     };
                     recognitionRef.current = r;
                 }
                 return () => { stopEverything(); if(recognitionRef.current) recognitionRef.current.stop(); };
-            }, [idx, startPlay, stopEverything, words]);
+            }, [idx, showHint, hintCount, startPlay, stopEverything, toggleHint, words]);
 
             const goNext = () => { 
                 if(idx < words.length - 1) { 
@@ -91,6 +91,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                     setStatus('idle'); 
                     setFeedback(''); 
                     setGradeResult('');
+                    setLastCheckedWord('');
                     requestAutoPlay(); // 标记翻页后自动播放
                 } else {
                     stopEverything();
@@ -180,7 +181,12 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 const file = e.target.files[0]; if(!file) return;
                 const checkedWord = words[idx];
                 setStatus('grading'); setFeedback('👀 批改中...');
-                const base64 = await compressImage(file);
+                let base64;
+                try {
+                    base64 = await compressImage(file);
+                } catch (err) {
+                    setStatus('idle'); setFeedback(err.message || '图片处理失败，请重试。'); return;
+                }
                 const prompt = `检查作业是否正确写出了词语“${checkedWord}”。
 请只返回 JSON，不要 Markdown，不要代码块：
 {"schemaVersion":1,"result":"correct|wrong|uncertain","confidence":"high|medium|low","transcription":"图片中识别到的孩子书写，无法识别则空","evidence":"判断依据","errorDetails":["具体错字或错误，正确时为空数组"],"feedback":"给5岁小朋友的一句话温柔点评"}
@@ -189,7 +195,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
 - 明显没写、写错字、少字、多字，result 为 wrong
 - 图片模糊、遮挡、无法判断，result 为 uncertain`;
                 const res = await requestStructuredGrading(callLLM, [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: base64 } }]);
-                setStatus('listening');
+                setStatus(recognitionRef.current ? 'listening' : 'idle');
                 setLastCheckedWord(checkedWord);
                 if (res.error) {
                     setGradeResult('uncertain');
@@ -211,12 +217,23 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
 
             const handlePhotoImportWords = async (e) => {
                 const file = e.target.files[0]; if(!file) return;
-                const base64 = await compressImage(file);
+                let base64;
+                try {
+                    base64 = await compressImage(file);
+                } catch (err) {
+                    alert(err.message || '图片处理失败，请重试。');
+                    return;
+                }
                 setStatus('grading'); setFeedback('🔍 正在提取词语...');
                 
                 const prompt = `提取图片中所有的中文词语（例如：春天、无论、开心）。请忽略单纯的页码、标题或无关文字。请返回 JSON 字符串数组，例如: ["词语1", "词语2"]`;
 
                 const res = await callLLM({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64 } }] }] });
+                if (res.error || !res.text) {
+                    alert(res.error || '识别失败');
+                    setStatus('idle'); setFeedback(''); setGradeResult('');
+                    return;
+                }
                 
                 try {
                     const cleanJson = res.text.replace(/```json|```/g, '').trim();
@@ -285,7 +302,7 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 link.href = url;
                 link.download = `dictation-words-${profileId}.json`;
                 link.click();
-                URL.revokeObjectURL(url);
+                setTimeout(() => URL.revokeObjectURL(url), 2000);
             };
 
             const practiceWrongWords = () => {
@@ -313,9 +330,13 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                 if (confirm('清空听写历史？')) setHistory([]);
             };
 
-            const correctCount = sessionResults.filter(item => item.result === 'correct').length;
-            const wrongCount = sessionResults.filter(item => item.result === 'wrong').length;
-            const uncertainCount = sessionResults.filter(item => item.result === 'uncertain').length;
+            // 总结按"词"统计（同一词多次批改只算最后一次），避免批改次数失真
+            const latestByWord = new Map();
+            sessionResults.forEach(item => latestByWord.set(item.word, item.result));
+            const latestResults = [...latestByWord.values()];
+            const correctCount = latestResults.filter(result => result === 'correct').length;
+            const wrongCount = latestResults.filter(result => result === 'wrong').length;
+            const uncertainCount = latestResults.filter(result => result === 'uncertain').length;
 
             if (finished) {
                 return (
@@ -408,10 +429,10 @@ export default function DictationMode({ callLLM, addStar, voiceURI, profileId, o
                         {status === 'idle' ? 
                             <button onClick={() => startPlay(words[idx])} className="col-span-2 bg-orange-500 text-white py-4 rounded-2xl shadow-lg font-bold text-lg active:scale-95 transition-transform">▶ 开始</button> :
                             <>
-                                <button onClick={() => startPlay(words[idx])} className="bg-white text-orange-500 border-2 border-orange-100 py-3 rounded-xl font-bold active:scale-95">↺ 重读</button>
-                                <label className="bg-indigo-500 text-white py-3 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95"><Icon name="camera" size={20}/> 批改<input type="file" className="hidden" accept="image/*" onChange={handleCheck} /></label>
+                                <button onClick={() => startPlay(words[idx])} disabled={status === 'grading'} className="bg-white text-orange-500 border-2 border-orange-100 py-3 rounded-xl font-bold active:scale-95 disabled:opacity-60">↺ 重读</button>
+                                <label className={`bg-indigo-500 text-white py-3 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95 ${status === 'grading' ? 'opacity-60 pointer-events-none' : ''}`}><Icon name="camera" size={20}/> 批改<input type="file" className="hidden" accept="image/*" onChange={handleCheck} /></label>
                                 <button onClick={() => toggleHint(showHint, hintCount)} className="col-span-2 bg-slate-100 text-slate-500 py-3 rounded-xl font-bold active:scale-95">{showHint?'隐藏': (hintCount===0 ? '看一眼 (3秒)' : '看一眼 (1秒)')}</button>
-                                <button onClick={goNext} className="col-span-2 bg-green-500 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95">下一个 ⏭</button>
+                                <button onClick={goNext} disabled={status === 'grading'} className="col-span-2 bg-green-500 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 disabled:opacity-60">下一个 ⏭</button>
                             </>
                         }
                         

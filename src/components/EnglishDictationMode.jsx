@@ -14,7 +14,7 @@ const DEFAULT_ITEMS = [
     { text: 'I like apples.', meaning: '我喜欢苹果。', type: 'sentence' }
 ];
 
-function parseEnglishItems(text) {
+export function parseEnglishItems(text) {
     try {
         const parsed = JSON.parse(text);
         const list = Array.isArray(parsed) ? parsed : parsed.items;
@@ -27,7 +27,10 @@ function parseEnglishItems(text) {
         }
     } catch {}
     return text.split(/[\n,，;；]+/).map(line => line.trim()).filter(Boolean).map(line => {
-        const [english, meaning = ''] = line.split(/[|：:]/);
+        // 只按第一个分隔符切分，释义里的冒号要保留
+        const sepIndex = line.search(/[|：:]/);
+        const english = sepIndex === -1 ? line : line.slice(0, sepIndex);
+        const meaning = sepIndex === -1 ? '' : line.slice(sepIndex + 1);
         return { text: english.trim(), meaning: meaning.trim(), type: english.includes(' ') ? 'sentence' : 'word' };
     });
 }
@@ -126,7 +129,15 @@ export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedb
         }
         setBusy(true);
         setFeedback('AI 正在查看英文听写作业...');
-        const base64 = await compressImage(file);
+        let base64;
+        try {
+            base64 = await compressImage(file);
+        } catch (err) {
+            setBusy(false);
+            setFeedback(err.message || '图片处理失败，请重试。');
+            setResult('uncertain');
+            return;
+        }
         const prompt = `请批改孩子的英文听写。
 目标：${current.text}
 中文意思：${current.meaning || '无'}
@@ -207,9 +218,13 @@ export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedb
         setSessionResults([]);
     };
 
-    const correctCount = sessionResults.filter(item => item.result === 'correct').length;
-    const wrongCount = sessionResults.filter(item => item.result === 'wrong').length;
-    const uncertainCount = sessionResults.filter(item => item.result === 'uncertain').length;
+    // 总结按"题"统计（同一题多次批改只算最后一次）
+    const latestByItem = new Map();
+    sessionResults.forEach(item => latestByItem.set(item.text, item.result));
+    const latestResults = [...latestByItem.values()];
+    const correctCount = latestResults.filter(result => result === 'correct').length;
+    const wrongCount = latestResults.filter(result => result === 'wrong').length;
+    const uncertainCount = latestResults.filter(result => result === 'uncertain').length;
 
     if (finished) {
         return (
@@ -276,7 +291,7 @@ export default function EnglishDictationMode({ callLLM, addStar, voiceURI, feedb
                             <input type="file" className="hidden" accept="image/*" capture="environment" onChange={checkPhoto} />
                         </label>
                     )}
-                    <button onClick={next} className="py-3 rounded-xl bg-green-500 text-white font-bold">下一个</button>
+                    <button onClick={next} disabled={busy} className="py-3 rounded-xl bg-green-500 text-white font-bold disabled:opacity-60">下一个</button>
                     <button onClick={speakCurrent} className="py-3 rounded-xl bg-slate-100 text-slate-500 font-bold">重听</button>
                     <button onClick={practiceWrong} className="py-3 rounded-xl bg-orange-50 text-orange-500 font-bold">错词再练</button>
                 </div>
