@@ -1,10 +1,18 @@
 const DB_NAME = 'ai_hanzi_tutor';
 const STORE_NAME = 'child_workspaces';
 const DB_VERSION = 1;
+export const EMPTY_UPDATED_AT = '1970-01-01T00:00:00.000Z';
 const cache = new Map();
 const loading = new Map();
 const writeQueues = new Map();
 const writeStatus = new Map();
+const persistListeners = new Set();
+
+// 云同步用：本地每次保存成功后通知（不含从云端拉下来的写入，避免回环）
+export function onWorkspacePersisted(listener) {
+    persistListeners.add(listener);
+    return () => persistListeners.delete(listener);
+}
 
 const legacyFields = {
     stars: { scoped: id => `app_stars_${id}`, legacy: 'app_stars', parse: value => String(value || '0') },
@@ -114,6 +122,9 @@ function persist(profileId) {
             if (!status || status.revision <= snapshot.revision) {
                 writeStatus.set(profileId, { state: 'saved', revision: snapshot.revision, error: null });
             }
+            persistListeners.forEach(listener => {
+                try { listener(profileId, snapshot); } catch { /* 同步失败不影响本地保存 */ }
+            });
         })
         .catch(error => {
             writeStatus.set(profileId, { state: 'error', revision: snapshot.revision, error });
@@ -131,13 +142,16 @@ export async function hydrateChildWorkspace(profileId) {
         try {
             let workspace = await readWorkspace(profileId);
             if (!workspace) {
+                const migrated = migrateLegacyWorkspace(profileId);
+                const now = new Date().toISOString();
                 workspace = {
                     profileId,
                     schemaVersion: 2,
                     revision: 0,
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                    data: migrateLegacyWorkspace(profileId)
+                    createdAt: now,
+                    // 空工作区记成“最早”，这样云端已有的数据一定比它新，不会被空数据覆盖
+                    updatedAt: Object.keys(migrated).length ? now : EMPTY_UPDATED_AT,
+                    data: migrated
                 };
                 await writeWorkspace(workspace);
             }
@@ -169,6 +183,8 @@ export function getChildValue(profileId, key, fallback) {
 export function setChildValue(profileId, key, value) {
     const workspace = cache.get(profileId);
     if (!workspace) return;
+    // 值没变就不保存：避免每次打开页面都刷新 updatedAt，导致云同步误判“本机更新”
+    if (hasOwn(workspace.data, key) && JSON.stringify(workspace.data[key]) === JSON.stringify(value)) return;
     workspace.data[key] = clone(value);
     // Callers often invoke this from a React effect. Do not return the write
     // promise, because React would treat it as an effect cleanup callback.
@@ -205,4 +221,35 @@ export async function replaceChildWorkspaceData(profileId, data) {
     const result = await persist(profileId);
     if (result?.ok === false) throw result.error;
     return workspace;
+}
+
+export function getChildWorkspaceMeta(profileId) {
+    const workspace = cache.get(profileId);
+    return workspace ? { updatedAt: workspace.updatedAt, revision: workspace.revision } : null;
+}
+
+// 读取本机已保存的工作区（不进内存缓存），云同步上传未打开过的孩子时使用
+export async function readStoredChildWorkspace(profileId) {
+    if (cache.has(profileId)) return clone(cache.get(profileId));
+    return readWorkspace(profileId);
+}
+
+// 采用云端版本：只在云端比本地新时写入本地，不触发再次上传。返回是否已采用。
+export async function applyRemoteWorkspace(profileId, remote) {
+    if (!remote || !remote.updatedAt || !remote.data || typeof remote.data !== 'object') return false;
+    await flushChildWorkspace(profileId);
+    const local = cache.get(profileId) || await readWorkspace(profileId);
+    if (local?.updatedAt && local.updatedAt >= remote.updatedAt) return false;
+    const workspace = {
+        profileId,
+        schemaVersion: 2,
+        createdAt: local?.createdAt || remote.updatedAt,
+        updatedAt: remote.updatedAt,
+        revision: (local?.revision || 0) + 1,
+        data: clone(remote.data)
+    };
+    await writeWorkspace(workspace);
+    cache.set(profileId, workspace);
+    writeStatus.set(profileId, { state: 'saved', revision: workspace.revision, error: null });
+    return true;
 }

@@ -28,3 +28,25 @@ describe('isProxyTargetAllowed 代理目标白名单', () => {
         expect(isProxyTargetAllowed('http://169.254.169.254/v1/models')).toBe(false);
     });
 });
+
+import worker, { isSameOrigin, isSyncKeyValid, syncRateLimited } from '../index.js';
+
+describe('D1 云同步保护', () => {
+    it('同步 key 必须是 64 位十六进制', () => {
+        expect(isSyncKeyValid('a'.repeat(64))).toBe(true);
+        expect(isSyncKeyValid('abc')).toBe(false);
+        expect(isSyncKeyValid('')).toBe(false);
+    });
+    it('拒绝跨站 Origin', () => {
+        expect(isSameOrigin(new Request('https://a.com/api/sync', { headers: { Origin: 'https://evil.com' } }))).toBe(false);
+        expect(isSameOrigin(new Request('https://a.com/api/sync', { headers: { Origin: 'https://a.com' } }))).toBe(true);
+    });
+    it('按 IP 限流', () => {
+        for (let i = 0; i < 2; i++) expect(syncRateLimited('ip-t', 1000 + i, 2)).toBe(false);
+        expect(syncRateLimited('ip-t', 1005, 2)).toBe(true);
+    });
+    it('没绑定 D1 时给出明确提示', async () => {
+        const res = await worker.fetch(new Request('https://a.com/api/sync'), {});
+        expect(res.status).toBe(503);
+    });
+});

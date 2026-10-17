@@ -5,6 +5,7 @@ import { loadReminder, saveReminder } from '../lib/reminder.js';
 import { getVoiceDownloadGuide, supportsSpeechSynthesis } from '../lib/deviceVoiceGuide.js';
 import { setVisionSupport } from '../lib/aiCapabilities.js';
 import { callLLM as requestLLM, listModels } from '../lib/llm.js';
+import { MIN_CODE_LENGTH, getSyncCode, setSyncCode } from '../lib/cloudSync.js';
 
 const DEFAULT_MODELS = ['gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash-exp', 'gpt-4o-mini', 'gpt-4o', 'deepseek-chat'];
 
@@ -39,7 +40,7 @@ export default function SettingsView({
     viaProxy, setViaProxy,
     voiceURI, setVoiceURI, englishVoiceURI, setEnglishVoiceURI,
     profiles, activeProfileId, setActiveProfileId, addProfile, renameProfile, deleteProfile,
-    exportActiveChildData, importActiveChildData, onBack
+    exportActiveChildData, importActiveChildData, syncStatus, onSyncNow, onBack
 }) {
     const [p, setP] = useState(provider);
     const [url, setUrl] = useState(baseUrl);
@@ -54,6 +55,22 @@ export default function SettingsView({
     const [fetchedModels, setFetchedModels] = useState([]);
     const [modelFetchStatus, setModelFetchStatus] = useState('');
     const [reminder, setReminder] = useState(() => loadReminder(activeProfileId));
+    const [syncCode, setSyncCodeInput] = useState(() => getSyncCode());
+    const [syncMessage, setSyncMessage] = useState('');
+
+    const syncNow = async () => {
+        const code = syncCode.trim();
+        if (code && code.length < MIN_CODE_LENGTH) { setSyncMessage(`同步码至少 ${MIN_CODE_LENGTH} 位`); return; }
+        if (!code) { setSyncCode(''); setSyncMessage('已关闭云同步，数据只保存在本机'); return; }
+        if (code !== getSyncCode()) setSyncCode(code);
+        setSyncMessage('正在同步...');
+        try {
+            await onSyncNow?.();
+            setSyncMessage('同步完成');
+        } catch (error) {
+            setSyncMessage(`同步失败：${error.message || '请检查网络'}`);
+        }
+    };
     const voiceList = useSpeechVoices('zh');
     const englishVoiceList = useSpeechVoices('en');
 
@@ -128,6 +145,12 @@ export default function SettingsView({
     const save = () => {
         const finalModel = isCustom ? customModel.trim() : m;
         if (!finalModel) { alert("模型名称不能为空"); return; }
+        const code = syncCode.trim();
+        if (code && code.length < MIN_CODE_LENGTH) { alert(`家庭同步码至少 ${MIN_CODE_LENGTH} 位`); return; }
+        if (code !== getSyncCode()) {
+            setSyncCode(code);
+            if (code) onSyncNow?.().catch(() => {});
+        }
         const finalUrl = url.trim() || 'https://api.openai.com/v1/chat/completions';
         setProvider(p); setBaseUrl(finalUrl); setApiKey(k); setModel(finalModel); setViaProxy(vp);
         setVoiceURI(vURI); setEnglishVoiceURI(enURI);
@@ -173,6 +196,24 @@ export default function SettingsView({
                                 }} />
                             </label>
                         </div>
+                    </div>
+                </div>
+
+                <div>
+                    <label className="text-sm font-bold text-slate-600 mb-2 block">云同步（手机、平板数据互通）</label>
+                    <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 space-y-3">
+                        <input value={syncCode} onChange={e => setSyncCodeInput(e.target.value)} type="password" autoComplete="off" className="w-full p-3 bg-white border rounded-xl focus:border-emerald-500 outline-none text-sm" placeholder={`家庭同步码（至少 ${MIN_CODE_LENGTH} 位，每台设备填同一个）`} />
+                        <div className="flex items-center gap-3">
+                            <button onClick={syncNow} className="shrink-0 py-2 px-3 rounded-lg bg-emerald-500 text-white text-sm font-bold">立即同步</button>
+                            <div className="text-xs text-slate-500">
+                                {syncMessage || (syncStatus?.state === 'error'
+                                    ? `上次同步失败：${syncStatus.message}`
+                                    : syncStatus?.at && getSyncCode()
+                                        ? `上次同步：${new Date(syncStatus.at).toLocaleString()}`
+                                        : '不填则只保存在本机')}
+                            </div>
+                        </div>
+                        <div className="text-xs text-slate-400">同步孩子档案、星星、生字本、听写记录和错题本。同步码就是你家数据的钥匙，请设得长一点、别告诉别人。</div>
                     </div>
                 </div>
 

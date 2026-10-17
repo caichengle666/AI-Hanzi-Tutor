@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { callLLM as requestLLM } from './lib/llm.js';
 import Icon from './components/Icon.jsx';
 import HomeView from './components/HomeView.jsx';
@@ -13,6 +13,8 @@ import { useLocalStorageState } from './hooks/useLocalStorageState.js';
 import { useWakeLock } from './hooks/useWakeLock.js';
 import { collectChildData, describeChildBackup, downloadJson, parseChildBackup, restoreChildData } from './lib/childData.js';
 import { getChildValue, getChildWorkspaceStatus, hydrateChildWorkspace, retryChildWorkspace, setChildValue } from './lib/childWorkspace.js';
+import { PROFILES_ID, getSyncStatus, isSyncEnabled, markProfilesChanged, onSyncStatus, schedulePush, startAutoPush, syncAll } from './lib/cloudSync.js';
+import { applyRemoteWorkspace } from './lib/childWorkspace.js';
 import { loadReminder, notifyStudyReminder, shouldNotify } from './lib/reminder.js';
 
 export default function App() {
@@ -40,11 +42,54 @@ export default function App() {
     const activeProfile = profiles.find(profile => profile.id === activeProfileId) || profiles[0];
     const profileId = activeProfile?.id || 'default';
 
+    const [syncStatus, setSyncStatus] = useState(getSyncStatus());
+    const profilesRef = useRef(profiles);
+    profilesRef.current = profiles;
+    const modeRef = useRef(mode);
+    modeRef.current = mode;
+    const initialSyncRef = useRef(null);
+
+    useEffect(() => onSyncStatus(setSyncStatus), []);
+
+    // 全量同步：云端更新的档案列表/孩子数据覆盖本机，本机更新的推上去
+    const runSync = useCallback(async () => {
+        if (!isSyncEnabled()) return;
+        const result = await syncAll(profilesRef.current);
+        if (result.profiles) {
+            setProfiles(result.profiles);
+        }
+        if (result.changedProfileIds.length) {
+            setWorkspaceVersion(version => version + 1);
+        }
+        return result;
+    }, []);
+
+    // 本地保存后自动上传；上传时发现云端更新则采用云端
+    useEffect(() => startAutoPush(async (changedId, remote) => {
+        if (await applyRemoteWorkspace(changedId, remote)) setWorkspaceVersion(version => version + 1);
+    }), []);
+
+    // 回到前台时（只在首页，避免打断正在进行的听写）拉一次
+    useEffect(() => {
+        const onVisible = () => {
+            if (document.visibilityState === 'visible' && modeRef.current === 'home') runSync().catch(() => {});
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => document.removeEventListener('visibilitychange', onVisible);
+    }, [runSync]);
+
     useEffect(() => {
         let active = true;
         setWorkspaceReady(false);
         setWorkspaceError('');
-        hydrateChildWorkspace(profileId)
+        // 首次加载前先同步（最多等 6 秒），保证新设备先拿到云端数据再开始写本地
+        if (!initialSyncRef.current) {
+            initialSyncRef.current = isSyncEnabled()
+                ? Promise.race([runSync().catch(() => {}), new Promise(resolve => setTimeout(resolve, 6000))])
+                : Promise.resolve();
+        }
+        initialSyncRef.current
+            .then(() => hydrateChildWorkspace(profileId))
             .then(() => { if (active) setWorkspaceReady(true); })
             .catch(() => { if (active) setWorkspaceError('孩子数据无法读取，请检查浏览器存储权限后重试。'); });
         return () => { active = false; };
@@ -54,6 +99,12 @@ export default function App() {
         localStorage.setItem('child_profiles', JSON.stringify(profiles));
     }, [profiles]);
 
+    // 家长改了档案列表（新增/改名/删除）后上传；从云端拉下来的不再回传
+    const profilesChanged = (nextProfiles) => {
+        const at = markProfilesChanged();
+        schedulePush(PROFILES_ID, async () => ({ updatedAt: at, data: nextProfiles }));
+    };
+
     useEffect(() => {
         if (!profiles.some(profile => profile.id === activeProfileId)) {
             setActiveProfileId(profiles[0]?.id || 'default');
@@ -62,7 +113,7 @@ export default function App() {
 
     useEffect(() => {
         if (workspaceReady) setStars(getChildValue(profileId, 'stars', '0'));
-    }, [profileId, workspaceReady]);
+    }, [profileId, workspaceReady, workspaceVersion]);
 
     useEffect(() => {
         if (!workspaceReady) return undefined;
@@ -101,13 +152,17 @@ export default function App() {
         const trimmedName = name.trim();
         if (!trimmedName) return;
         const profile = { id: `child_${Date.now()}`, name: trimmedName };
-        setProfiles(prev => [...prev, profile]);
+        const next = [...profiles, profile];
+        setProfiles(next);
+        profilesChanged(next);
         setActiveProfileId(profile.id);
     };
     const renameProfile = (profileIdToRename, name) => {
         const trimmedName = name.trim();
         if (!trimmedName) return;
-        setProfiles(prev => prev.map(profile => profile.id === profileIdToRename ? { ...profile, name: trimmedName } : profile));
+        const next = profiles.map(profile => profile.id === profileIdToRename ? { ...profile, name: trimmedName } : profile);
+        setProfiles(next);
+        profilesChanged(next);
     };
     const deleteProfile = (profileIdToDelete) => {
         if (profiles.length <= 1) {
@@ -117,6 +172,7 @@ export default function App() {
         if (!confirm('删除这个孩子档案？对应的星星、词库、错题和听写历史也会保留在本机，但不会再显示。')) return;
         const nextProfiles = profiles.filter(profile => profile.id !== profileIdToDelete);
         setProfiles(nextProfiles);
+        profilesChanged(nextProfiles);
         if (activeProfileId === profileIdToDelete) setActiveProfileId(nextProfiles[0].id);
     };
     const exportActiveChildData = () => {
@@ -159,6 +215,7 @@ export default function App() {
                     <span className="font-bold text-slate-700 text-lg md:text-xl tracking-tight">AI全能识字</span>
                 </div>
                 <div className="flex items-center gap-4">
+                    {syncStatus.state === 'error' && <button onClick={() => runSync().catch(() => {})} title={syncStatus.message} className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-100 px-2 py-1 rounded-lg">同步失败，重试</button>}
                     {saveStatus.state === 'error' && <button onClick={retrySave} className="text-xs font-bold text-red-500 bg-red-50 border border-red-100 px-2 py-1 rounded-lg">保存失败，重试</button>}
                     <div className="bg-yellow-100 text-yellow-700 px-4 py-1.5 rounded-full text-sm font-bold flex items-center gap-1.5 shadow-sm border border-yellow-200">
                         <Icon name="star" size={16} className="fill-yellow-500 text-yellow-500"/> <span className="pt-0.5">{parseInt(stars || '0')}</span>
@@ -170,7 +227,7 @@ export default function App() {
                 {mode === 'home' && <HomeView key={`${profileId}-${workspaceVersion}`} setMode={setMode} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} />}
                 {!workspaceReady && mode !== 'home' && <div className="flex-1 flex items-center justify-center text-slate-400 font-bold">正在加载孩子的数据...</div>}
                 {workspaceError && <div className="flex-1 flex flex-col items-center justify-center gap-4 text-slate-500 font-bold p-6 text-center"><div>{workspaceError}</div><button onClick={() => window.location.reload()} className="px-4 py-2 bg-orange-500 text-white rounded-xl">重新加载</button></div>}
-                {workspaceReady && mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} viaProxy={viaProxy} setViaProxy={setViaProxy} voiceURI={voiceURI} setVoiceURI={setVoiceURI} englishVoiceURI={englishVoiceURI} setEnglishVoiceURI={setEnglishVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} onBack={() => setMode('home')} />}
+                {workspaceReady && mode === 'settings' && <SettingsView provider={provider} setProvider={setProvider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} viaProxy={viaProxy} setViaProxy={setViaProxy} voiceURI={voiceURI} setVoiceURI={setVoiceURI} englishVoiceURI={englishVoiceURI} setEnglishVoiceURI={setEnglishVoiceURI} profiles={profiles} activeProfileId={profileId} setActiveProfileId={setActiveProfileId} addProfile={addProfile} renameProfile={renameProfile} deleteProfile={deleteProfile} exportActiveChildData={exportActiveChildData} importActiveChildData={importActiveChildData} syncStatus={syncStatus} onSyncNow={runSync} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'assignments' && <AssignmentsView profileId={profileId} onChanged={() => setWorkspaceVersion(version => version + 1)} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'learn' && <LearnMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}
                 {workspaceReady && mode === 'dictation' && <DictationMode callLLM={callLLM} addStar={addStar} voiceURI={voiceURI} profileId={profileId} onBack={() => setMode('home')} />}

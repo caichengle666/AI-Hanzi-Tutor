@@ -83,6 +83,14 @@ npm run build
 4. 选择或填写 AI 模型。
 5. (可选) 选择喜欢的朗读语音。
 
+## ☁️ 云同步（D1）
+
+手机、平板填同一个**家庭同步码**（设置 → 云同步，至少 8 位），孩子档案、星星、生字本、听写记录、错题本就会自动互通。不填则和以前一样只存本机。
+
+- 不需要任何服务端配置：`wrangler.jsonc` 里声明了 D1 绑定 `DB`，下一次 `wrangler deploy` 会自动创建数据库 `ai-hanzi-tutor-sync`，表在第一次请求时自动建好。
+- GitHub Actions 部署用的 `CLOUDFLARE_API_TOKEN` 需要带 **D1 编辑** 权限，否则首次部署创建数据库会失败。
+- 同步码只保存在设备本地，服务器只存它的哈希；按孩子整份同步，以最后修改的设备为准。
+
 ## ☁️ Cloudflare Pages
 
 Cloudflare Pages 推荐配置：

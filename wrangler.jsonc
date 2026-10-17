@@ -3,6 +3,10 @@
   "account_id": "14718f69a99f04e11b0edbab91ae4601",
   "compatibility_date": "2026-07-07",
   "main": "worker/index.js",
+  // D1 云同步数据库：不写 database_id，首次 wrangler deploy 时自动创建并绑定
+  "d1_databases": [
+    { "binding": "DB", "database_name": "ai-hanzi-tutor-sync" }
+  ],
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application"
